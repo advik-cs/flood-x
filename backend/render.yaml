@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: flood-x-backend
+    env: node
+    plan: free
+    buildCommand: npm install --include=dev && npm run build
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: FRONTEND_URL
+        value: https://<your-flood-x-frontend>.vercel.app
