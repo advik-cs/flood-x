@@ -17,7 +17,8 @@ import {
   PixelProbeResult
 } from '../types/index.js';
 
-const API_BASE = '/api';
+const rawApiUrl = (import.meta as any).env?.VITE_API_URL;
+const API_BASE = rawApiUrl ? `${rawApiUrl.replace(/\/+$/, '')}/api` : '/api';
 
 export async function fetchStatus(): Promise<SystemStatus> {
   const res = await fetch(`${API_BASE}/status`);
