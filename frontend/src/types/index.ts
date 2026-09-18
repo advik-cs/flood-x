@@ -223,7 +223,7 @@ export interface DroneDetection {
   id: string;
   image_id: string;
   object_type: 'person' | 'vehicle' | 'boat' | 'building' | 'flooded_structure' | 'blocked_road';
-  confidence: number; // 0 to 1
+  confidence?: number; // Optional raw confidence score (0 to 1) directly from model
   bbox: [number, number, number, number]; // [ymin, xmin, ymax, xmax] in normalized 0-1
   location?: GeoPoint;
   approved: boolean;

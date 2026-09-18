@@ -1,26 +1,31 @@
 {
-    "name":  "flood-x-backend",
-    "version":  "1.0.0",
-    "description":  "FLOOD-X: AI-Powered Flood Intelligence \u0026 Disaster Response Platform - Backend API",
-    "main":  "dist/server.js",
-    "scripts":  {
-                    "build":  "tsc",
-                    "start":  "node dist/server.js",
-                    "dev":  "tsx watch src/server.ts"
-                },
-    "dependencies":  {
-                         "@types/cors":  "^2.8.17",
-                         "@types/express":  "^4.17.21",
-                         "@types/multer":  "^1.4.12",
-                         "@types/node":  "^22.10.5",
-                         "cors":  "^2.8.5",
-                         "dotenv":  "^16.4.7",
-                         "express":  "^4.21.2",
-                         "multer":  "^1.4.5-lts.1",
-                         "typescript":  "^5.7.3"
-                     },
-    "devDependencies":  {
-                            "tsx":  "^4.19.2"
-                        },
-    "type":  "module"
+    "name": "flood-x-backend",
+    "version": "1.0.0",
+    "description": "FLOOD-X: AI-Powered Flood Intelligence & Disaster Response Platform - Backend API",
+    "main": "dist/server.js",
+    "scripts": {
+        "build": "tsc",
+        "start": "node dist/server.js",
+        "dev": "tsx watch src/server.ts"
+    },
+    "dependencies": {
+        "@tensorflow-models/coco-ssd": "^2.2.3",
+        "@tensorflow/tfjs": "^4.22.0",
+        "cors": "^2.8.5",
+        "dotenv": "^16.4.7",
+        "express": "^4.21.2",
+        "jpeg-js": "^0.4.4",
+        "multer": "^1.4.5-lts.1",
+        "pngjs": "^7.0.0"
+    },
+    "devDependencies": {
+        "@types/cors": "^2.8.17",
+        "@types/express": "^4.17.21",
+        "@types/multer": "^1.4.12",
+        "@types/node": "^22.10.5",
+        "@types/pngjs": "^6.0.5",
+        "tsx": "^4.19.2",
+        "typescript": "^5.7.3"
+    },
+    "type": "module"
 }

@@ -72,8 +72,8 @@ export class Store {
       this.runFusion(pid);
     }
 
-    // Initialize deterministic demo aerial reconnaissance detections
-    this.droneDetections = visionService.getDemoDetections('IMG-DEMO-AERIAL');
+    // Initialize drone detections (empty on initial startup as per requirements)
+    this.droneDetections = [];
 
     this.auditLogs = [
       {
@@ -315,6 +315,17 @@ export class Store {
       return this.droneDetections[index];
     }
     return null;
+  }
+
+  public loadDemoDroneDetections(): DroneDetection[] {
+    this.droneDetections = visionService.getDemoDetections('IMG-DEMO-AERIAL');
+    this.runFusion(this.currentPresetId);
+    return this.droneDetections;
+  }
+
+  public clearDroneDetections(): void {
+    this.droneDetections = [];
+    this.runFusion(this.currentPresetId);
   }
 
   public getSARResult(presetId = this.currentPresetId): SARAnalysisResult | undefined {

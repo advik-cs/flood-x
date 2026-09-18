@@ -7,7 +7,6 @@ import { DroneAnalysis } from './components/views/DroneAnalysis.js';
 import { IncidentsSOS } from './components/views/IncidentsSOS.js';
 import { DamageAssessment } from './components/views/DamageAssessment.js';
 import { ResourceOptimization } from './components/views/ResourceOptimization.js';
-import { BeforeDisaster } from './components/views/BeforeDisaster.js';
 import { AfterDisaster } from './components/views/AfterDisaster.js';
 import { SystemStatus as SystemStatusView } from './components/views/SystemStatus.js';
 
@@ -244,14 +243,6 @@ export function App() {
             roads={roads}
             onRefreshData={loadData}
             onSelectRoute={(polyline) => setActiveRoutePolyline(polyline)}
-          />
-        )}
-
-        {activeTab === 'before' && (
-          <BeforeDisaster
-            preset={activePreset}
-            shelters={shelters}
-            roads={roads}
           />
         )}
 

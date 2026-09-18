@@ -136,9 +136,8 @@ $$\text{Priority Score} = w_{\text{flood}} \cdot S_{\text{flood}} + w_{\text{peo
 5. **INCIDENTS & SOS:** Crowdsourced emergency submission form (GPS coordinates, category, severity, affected counts, medical urgency) and live triage stream.
 6. **DAMAGE ASSESSMENT:** Structural degradation classification for lifelines, roads, bridges, and agricultural zones with economic impact estimates and rebuild ranks (1 to 5).
 7. **RESOURCE OPTIMIZATION:** Emergency fleet inventory, configurable priority weights sliders, and obstacle-aware graph routing avoiding flooded road arcs.
-8. **BEFORE DISASTER:** Community resilience dashboard, hydrological alert level, verified shelter directory, and interactive 72-hour survival kit checklist.
-9. **AFTER DISASTER:** Phased recovery priority sequence (Hospital route $\rightarrow$ Residential settlement $\rightarrow$ Bridge clearance $\rightarrow$ Power grid $\rightarrow$ Agriculture).
-10. **SYSTEM STATUS:** Real-time health monitor of all sub-systems (Copernicus API, Sentinel-1 feed, GIS, AI engine, Database, Drone analysis, Citizen network) and demo reset button.
+8. **DISASTER MANAGEMENT:** Phased recovery priority sequence (Hospital route $\rightarrow$ Residential settlement $\rightarrow$ Bridge clearance $\rightarrow$ Power grid $\rightarrow$ Agriculture).
+9. **SYSTEM STATUS:** Real-time health monitor of all sub-systems (Copernicus API, Sentinel-1 feed, GIS, AI engine, Database, Drone analysis, Citizen network) and demo reset button.
 
 ---
 
@@ -173,7 +172,7 @@ Click the **DEMO STORY** button in the top navigation bar to launch the interact
 12. **Step 12:** Open **RESOURCE OPTIMIZATION**; show fleet inventory and tweak priority formula weights.
 13. **Step 13:** Execute **1-Click Dispatch** for Vigili del Fuoco SAR Boat Alpha; observe calculated detour avoiding flooded Via Renaccio.
 14. **Step 14:** Click **GENERATE SITREP**; inspect the official ICS emergency report with limitations and disclaimer.
-15. **Step 15:** Open **DAMAGE ASSESSMENT** and **AFTER DISASTER**; present post-disaster structural ranks and hospital road priority #1.
+15. **Step 15:** Open **DAMAGE ASSESSMENT** and **DISASTER MANAGEMENT**; present post-disaster structural ranks and hospital road priority #1.
 
 ---
 

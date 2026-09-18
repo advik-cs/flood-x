@@ -155,7 +155,7 @@ export class FusionEngine {
           people_detected: detectedPeopleCount,
           source: 'MODEL-DERIVED',
           confidence_avg: linkedDetections.length > 0 
-            ? parseFloat((linkedDetections.reduce((s, d) => s + d.confidence, 0) / linkedDetections.length).toFixed(2)) 
+            ? parseFloat((linkedDetections.reduce((s, d) => s + (d.confidence ?? 0), 0) / linkedDetections.length).toFixed(2)) 
             : (inc.ground_detections?.confidence_avg || 0)
         },
         sos_reports_summary: {

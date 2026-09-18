@@ -17,8 +17,7 @@ import {
   PixelProbeResult
 } from '../types/index.js';
 
-const rawApiUrl = (import.meta as any).env?.VITE_API_URL;
-const API_BASE = rawApiUrl ? `${rawApiUrl.replace(/\/+$/, '')}/api` : '/api';
+const API_BASE = '/api';
 
 export async function fetchStatus(): Promise<SystemStatus> {
   const res = await fetch(`${API_BASE}/status`);
@@ -176,6 +175,34 @@ export async function approveDroneDetection(id: string, approved: boolean, flagg
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ approved, flagged_for_rescue: flagged })
+  });
+  return res.json();
+}
+
+export async function loadDemoDroneScenario(): Promise<any> {
+  const res = await fetch(`${API_BASE}/drone/demo`, {
+    method: 'POST'
+  });
+  return res.json();
+}
+
+export async function resetDroneAnalysis(): Promise<any> {
+  const res = await fetch(`${API_BASE}/drone/reset`, {
+    method: 'POST'
+  });
+  return res.json();
+}
+
+export async function georeferenceDroneDetections(coords: {
+  latitude: number;
+  longitude: number;
+  altitude?: number;
+  heading?: number;
+}): Promise<any> {
+  const res = await fetch(`${API_BASE}/drone/georeference`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(coords)
   });
   return res.json();
 }

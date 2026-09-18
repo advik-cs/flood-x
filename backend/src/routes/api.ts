@@ -363,16 +363,97 @@ apiRouter.get('/drone/detections', (_req: Request, res: Response) => {
   res.json(store.getDroneDetections());
 });
 
-apiRouter.post('/drone/analyze', upload.single('image'), (req: Request, res: Response) => {
+apiRouter.post('/drone/analyze', upload.single('image'), async (req: Request, res: Response) => {
   const file = req.file;
   const imageId = `IMG-${Date.now().toString().slice(-6)}`;
   const filename = file ? file.filename : 'demo_aerial_recon.jpg';
 
-  // Analyze via visionService (custom uploaded image vs demo baseline)
-  const analysis = visionService.analyzeImage(filename, imageId, !file);
-  store.setDroneDetections(analysis.detections);
+  let clientDetections: any = undefined;
+  if (req.body.detections) {
+    try {
+      clientDetections = typeof req.body.detections === 'string'
+        ? JSON.parse(req.body.detections)
+        : req.body.detections;
+    } catch (e) {
+      console.warn('Unable to parse client-side detections payload:', e);
+    }
+  }
 
+  const clientInferenceTime = req.body.inference_time_seconds
+    ? parseFloat(req.body.inference_time_seconds)
+    : undefined;
+
+  const rawLat = req.body.latitude ? parseFloat(req.body.latitude) : undefined;
+  const rawLng = req.body.longitude ? parseFloat(req.body.longitude) : undefined;
+  const rawAlt = req.body.altitude ? parseFloat(req.body.altitude) : undefined;
+  const rawHead = req.body.heading ? parseFloat(req.body.heading) : undefined;
+
+  const georefOptions = {
+    latitude: rawLat !== undefined && !isNaN(rawLat) ? rawLat : undefined,
+    longitude: rawLng !== undefined && !isNaN(rawLng) ? rawLng : undefined,
+    altitude: rawAlt !== undefined && !isNaN(rawAlt) ? rawAlt : undefined,
+    heading: rawHead !== undefined && !isNaN(rawHead) ? rawHead : undefined
+  };
+
+  const isDemo = req.body.is_demo === 'true' || req.body.is_demo === true || (!file && !clientDetections);
+
+  let analysis;
+  if (isDemo) {
+    analysis = visionService.analyzeImage(filename, imageId, true, undefined, georefOptions, 0);
+  } else if (clientDetections && Array.isArray(clientDetections) && clientDetections.length > 0) {
+    // Client-side WebGL engine succeeded with real detections
+    analysis = visionService.analyzeImage(filename, imageId, false, clientDetections, georefOptions, clientInferenceTime);
+  } else if (file && fs.existsSync(file.path)) {
+    // Autonomous server-side multi-scale vision engine fallback
+    analysis = await visionService.detectInImageFile(file.path, filename, imageId, georefOptions);
+  } else {
+    analysis = visionService.analyzeImage(filename, imageId, false, [], georefOptions, 0);
+  }
+
+  store.setDroneDetections(analysis.detections);
   res.json(analysis);
+});
+
+apiRouter.post('/drone/demo', (_req: Request, res: Response) => {
+  const detections = store.loadDemoDroneDetections();
+  res.json({
+    imageId: 'IMG-DEMO-AERIAL',
+    filename: 'demo_aerial_recon.jpg',
+    imageUrl: '/demo_aerial_recon.jpg',
+    detections,
+    totalDetections: detections.length,
+    isDemo: true
+  });
+});
+
+apiRouter.post('/drone/reset', (_req: Request, res: Response) => {
+  store.clearDroneDetections();
+  res.json({ success: true, message: 'Drone detections cleared' });
+});
+
+apiRouter.post('/drone/georeference', (req: Request, res: Response) => {
+  const { latitude, longitude, altitude, heading } = req.body;
+  const lat = typeof latitude === 'number' ? latitude : parseFloat(latitude);
+  const lng = typeof longitude === 'number' ? longitude : parseFloat(longitude);
+
+  if (isNaN(lat) || isNaN(lng)) {
+    return res.status(400).json({ error: 'Valid latitude and longitude are required' });
+  }
+
+  const detections = store.getDroneDetections().map(det => {
+    const latOffset = ((det.bbox[0] - 0.5) * 0.008);
+    const lngOffset = ((det.bbox[1] - 0.5) * 0.008);
+    return {
+      ...det,
+      location: {
+        lat: parseFloat((lat + latOffset).toFixed(6)),
+        lng: parseFloat((lng + lngOffset).toFixed(6))
+      }
+    };
+  });
+
+  store.setDroneDetections(detections);
+  res.json({ success: true, detections });
 });
 
 apiRouter.post('/drone/detections/:id/approve', (req: Request, res: Response) => {

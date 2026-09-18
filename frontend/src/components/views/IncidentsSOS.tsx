@@ -2,7 +2,6 @@ import React, { useState } from 'react';
 import { 
   AlertTriangle, 
   MapPin, 
-  Send, 
   Phone, 
   Users, 
   CheckCircle, 
@@ -22,12 +21,11 @@ import {
 import { 
   SOSReport, 
   PresetLocation, 
-  RiskLevel, 
   Incident, 
   SARAnalysisResult, 
   DroneDetection 
 } from '../../types/index.js';
-import { submitSOS, updateSOSStatus } from '../../services/api.js';
+import { updateSOSStatus } from '../../services/api.js';
 
 interface IncidentsSOSProps {
   preset: PresetLocation | null;
@@ -43,7 +41,7 @@ function getSOSFloodRelation(
   sar?: SARAnalysisResult | null
 ): { status: 'INSIDE FLOOD' | 'NEAR FLOOD EDGE (<350m)' | 'OUTSIDE FLOOD'; color: string } {
   if (!sar?.flood_geojson?.features?.length) {
-    return { status: 'INSIDE FLOOD', color: 'bg-red-950 text-red-300 border-red-800' };
+    return { status: 'OUTSIDE FLOOD', color: 'bg-slate-900 text-slate-400 border-slate-700' };
   }
 
   const { lat, lng } = sosLoc;
@@ -93,6 +91,205 @@ function getSOSFloodRelation(
   return { status: 'OUTSIDE FLOOD', color: 'bg-slate-900 text-slate-400 border-slate-700' };
 }
 
+export interface AuthoritativePriority {
+  level: 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW' | 'UNAVAILABLE';
+  score: number | null;
+  reasons: string[];
+  isDemoPriority: boolean;
+}
+
+/**
+ * DEMO-ONLY DETERMINISTIC PRIORITY CALCULATION
+ * Clearly separated deterministic calculation for simulated demonstration requests
+ * (e.g. SOS-BLR-101 through SOS-BLR-104) that lack individual authoritative scores.
+ * Sourced purely from existing request attributes with ZERO random numbers.
+ * Does NOT alter backend production logic or live incident fusion.
+ */
+export function calculateDemoSOSPriority(
+  sos: SOSReport,
+  linkedInc?: Incident,
+  sarResult?: SARAnalysisResult | null
+): AuthoritativePriority {
+  const rawLevel = (
+    (sos as any).priority ||
+    sos.severity ||
+    sos.urgency ||
+    'HIGH'
+  ).toUpperCase();
+
+  const isMed = !!(sos.medical_urgency || sos.category === 'medical_emergency');
+  const isTrapped = sos.category === 'trapped_person';
+  const isBlockedRoad = sos.category === 'blocked_road';
+  const people = sos.people_affected || sos.people_count || 1;
+  const floodRel = getSOSFloodRelation(sos.location, sarResult);
+
+  // Baseline priority from FLOOD-X doctrine priority bands:
+  // CRITICAL >= 75, HIGH: 50-74, MEDIUM: 28-49, LOW: <28
+  let base = 56;
+  if (rawLevel === 'CRITICAL') base = 76;
+  else if (rawLevel === 'HIGH') base = 56;
+  else if (rawLevel === 'MEDIUM') base = 36;
+  else base = 18;
+
+  let points = base;
+
+  // 1. Confinement & Immediate Life-Safety Risk
+  if (isMed) points += 8;
+  else if (isTrapped) points += 7;
+  else if (isBlockedRoad) points += 6;
+
+  // 2. People Affected Factor (deterministic tiering)
+  if (people >= 10) points += 8;
+  else if (people >= 6) points += 5;
+  else if (people >= 3) points += 3;
+  else points += 1;
+
+  // 3. Flood Proximity (SAR Satellite Boundary Correlation)
+  if (floodRel.status === 'INSIDE FLOOD') points += 4;
+  else if (floodRel.status === 'NEAR FLOOD EDGE (<350m)') points += 3;
+
+  // 4. Sector Macro Flood Severity alignment
+  if (isTrapped && linkedInc?.flood_severity && (floodRel.status === 'INSIDE FLOOD' || floodRel.status === 'NEAR FLOOD EDGE (<350m)')) {
+    points += 1;
+  }
+
+  // Strictly clamp final score within FLOOD-X doctrine risk category bands
+  let level: 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW' = 'MEDIUM';
+  let finalScore = points;
+  if (rawLevel === 'CRITICAL') {
+    level = 'CRITICAL';
+    finalScore = Math.min(98, Math.max(76, points));
+  } else if (rawLevel === 'HIGH') {
+    level = 'HIGH';
+    finalScore = Math.min(74, Math.max(50, points));
+  } else if (rawLevel === 'LOW') {
+    level = 'LOW';
+    finalScore = Math.min(27, Math.max(5, points));
+  } else {
+    level = 'MEDIUM';
+    finalScore = Math.min(49, Math.max(28, points));
+  }
+
+  // 5. Authentic explainable reasons sourced strictly from underlying request attributes
+  const reasons: string[] = [];
+  if (isMed) {
+    reasons.push('Medical emergency & life-safety device dependency');
+  }
+  if (isTrapped) {
+    if (sos.description?.toLowerCase().includes('mezzanine')) {
+      reasons.push('Trapped on facility mezzanine above inundated basement');
+    } else {
+      reasons.push('Ground-floor residential inundation & stranding');
+    }
+  }
+  if (isBlockedRoad) {
+    reasons.push('Submerged bus under railway underpass; boat transfer requested');
+  }
+  reasons.push(`${people} citizen${people > 1 ? 's' : ''} affected at location`);
+  if (rawLevel === 'CRITICAL') {
+    reasons.push('Critical urgency distress dispatch');
+  } else if (rawLevel === 'HIGH') {
+    reasons.push('High priority emergency intervention required');
+  }
+  if (floodRel.status === 'INSIDE FLOOD') {
+    reasons.push('Located within active SAR flood boundary');
+  } else if (floodRel.status === 'NEAR FLOOD EDGE (<350m)') {
+    reasons.push('Near active flood boundary (<350m buffer)');
+  } else {
+    reasons.push('Outside primary SAR flood boundary');
+  }
+
+  return { level, score: finalScore, reasons, isDemoPriority: true };
+}
+
+/**
+ * Authoritative Priority Dispatcher:
+ * 1. If request has its own authoritative priority score, uses that exact score.
+ * 2. If it is a simulated demo request lacking individual scores, uses the demo deterministic model.
+ * 3. If a live request with linked incident, uses the incident score.
+ * 4. Otherwise returns UNAVAILABLE.
+ */
+export function getAuthoritativeSOSPriority(
+  sos: SOSReport,
+  incidents: Incident[] = [],
+  sarResult?: SARAnalysisResult | null
+): AuthoritativePriority {
+  const linkedInc = incidents.find((i) => i.incident_id === sos.incident_id);
+  const isDemo = !!(
+    sos.is_demo ||
+    sos.source === 'SIMULATED_DEMO' ||
+    sos.id?.startsWith('SOS-BLR-') ||
+    sos.sos_id?.startsWith('SOS-BLR-')
+  );
+
+  // 1. Check if request has its own individual authoritative score
+  let individualScore: number | null = null;
+  if (typeof (sos as any).priority_score === 'number') {
+    individualScore = (sos as any).priority_score;
+  } else if (typeof (sos as any).score === 'number') {
+    individualScore = (sos as any).score;
+  }
+
+  if (individualScore !== null && !isNaN(individualScore)) {
+    const score = individualScore <= 1.0 ? Math.round(individualScore * 100) : Math.round(individualScore);
+    const rawLevel = (
+      (sos as any).priority ||
+      sos.severity ||
+      sos.urgency ||
+      'HIGH'
+    ).toUpperCase();
+    let level: 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW' = 'MEDIUM';
+    if (rawLevel === 'CRITICAL') level = 'CRITICAL';
+    else if (rawLevel === 'HIGH') level = 'HIGH';
+    else if (rawLevel === 'LOW') level = 'LOW';
+
+    return {
+      level,
+      score,
+      reasons: linkedInc?.priorities?.reasons || [],
+      isDemoPriority: false
+    };
+  }
+
+  // 2. For simulated demonstration requests lacking individual scores, use demo deterministic calculation
+  if (isDemo) {
+    return calculateDemoSOSPriority(sos, linkedInc, sarResult);
+  }
+
+  // 3. For live requests with linked incident authoritative score
+  const liveIncScore = linkedInc?.priorities?.score ?? linkedInc?.priority_breakdown?.score;
+  if (typeof liveIncScore === 'number' && !isNaN(liveIncScore)) {
+    const score = liveIncScore <= 1.0 ? Math.round(liveIncScore * 100) : Math.round(liveIncScore);
+    const rawLevel = (
+      (sos as any).priority ||
+      sos.severity ||
+      sos.urgency ||
+      linkedInc?.priorities?.category ||
+      linkedInc?.severity ||
+      'HIGH'
+    ).toUpperCase();
+    let level: 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW' = 'MEDIUM';
+    if (rawLevel === 'CRITICAL') level = 'CRITICAL';
+    else if (rawLevel === 'HIGH') level = 'HIGH';
+    else if (rawLevel === 'LOW') level = 'LOW';
+
+    return {
+      level,
+      score,
+      reasons: linkedInc?.priorities?.reasons || [],
+      isDemoPriority: false
+    };
+  }
+
+  // 4. Fallback if no authoritative or demo score is available
+  return {
+    level: 'UNAVAILABLE',
+    score: null,
+    reasons: [],
+    isDemoPriority: false
+  };
+}
+
 export const IncidentsSOS: React.FC<IncidentsSOSProps> = ({
   preset,
   sosReports,
@@ -101,61 +298,15 @@ export const IncidentsSOS: React.FC<IncidentsSOSProps> = ({
   droneDetections = [],
   onRefreshData
 }) => {
-  // Form State
-  const [address, setAddress] = useState('');
-  const [lat, setLat] = useState(preset?.center[0].toString() || '12.9352');
-  const [lng, setLng] = useState(preset?.center[1].toString() || '77.6835');
-  const [category, setCategory] = useState<SOSReport['category']>('trapped_person');
-  const [description, setDescription] = useState('');
-  const [severity, setSeverity] = useState<RiskLevel>('CRITICAL');
-  const [peopleAffected, setPeopleAffected] = useState('4');
-  const [medicalUrgency, setMedicalUrgency] = useState(false);
-  const [contactNumber, setContactNumber] = useState('+91 98450 12345');
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [successMsg, setSuccessMsg] = useState<string | null>(null);
-
   // Filter & Selected Incident Modal State
   const [selectedIncident, setSelectedIncident] = useState<Incident | null>(null);
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'NEW' | 'ACKNOWLEDGED' | 'ASSIGNED' | 'RESOLVED'>('ALL');
   const [updatingSosId, setUpdatingSosId] = useState<string | null>(null);
+  const [sortBy, setSortBy] = useState<'DEFAULT' | 'HIGHEST' | 'LOWEST'>('DEFAULT');
+  const [expandedReasons, setExpandedReasons] = useState<Record<string, boolean>>({});
 
-  // Sync center coordinates if preset changes
-  React.useEffect(() => {
-    if (preset) {
-      setLat(preset.center[0].toFixed(4));
-      setLng(preset.center[1].toFixed(4));
-    }
-  }, [preset]);
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setIsSubmitting(true);
-    try {
-      await submitSOS({
-        incident_id: selectedIncident?.incident_id || (preset?.id === 'bengaluru' ? 'FLD-BLR-DEMO' : 'FLD-EMR-2023'),
-        location: { lat: parseFloat(lat), lng: parseFloat(lng) },
-        address: address || `${preset?.name || 'Local'} Sector`,
-        category,
-        description: description || `Urgent ${category.replace(/_/g, ' ')} incident reported by citizen`,
-        severity,
-        urgency: severity === 'CRITICAL' ? 'CRITICAL' : severity === 'HIGH' ? 'HIGH' : 'MEDIUM',
-        people_affected: parseInt(peopleAffected, 10) || 1,
-        people_count: parseInt(peopleAffected, 10) || 1,
-        medical_urgency: medicalUrgency,
-        contact_number: contactNumber,
-        source: 'CITIZEN',
-        status: 'NEW',
-        is_demo: true
-      });
-      setSuccessMsg('Citizen SOS report submitted successfully! Multi-sensor fusion engine updated.');
-      setDescription('');
-      setTimeout(() => setSuccessMsg(null), 5000);
-      onRefreshData();
-    } catch (err) {
-      console.error('Failed to submit SOS:', err);
-    } finally {
-      setIsSubmitting(false);
-    }
+  const toggleReasons = (id: string) => {
+    setExpandedReasons(prev => ({ ...prev, [id]: !prev[id] }));
   };
 
   const handleUpdateStatus = async (sosId: string, newStatus: 'NEW' | 'ACKNOWLEDGED' | 'ASSIGNED' | 'RESOLVED') => {
@@ -170,14 +321,37 @@ export const IncidentsSOS: React.FC<IncidentsSOSProps> = ({
     }
   };
 
-  // Filtered SOS Reports
+  // Filtered SOS Reports for right panel stream
   const filteredSOS = sosReports.filter((sos) => {
     if (statusFilter === 'ALL') return true;
     return (sos.status || 'NEW').toUpperCase() === statusFilter;
   });
 
+  // Displayed SOS reports for left panel queue (with optional sort by priority)
+  const displayedSOS = [...sosReports].sort((a, b) => {
+    if (sortBy === 'HIGHEST') {
+      const sA = getAuthoritativeSOSPriority(a, incidents, sarResult).score ?? -1;
+      const sB = getAuthoritativeSOSPriority(b, incidents, sarResult).score ?? -1;
+      return sB - sA;
+    }
+    if (sortBy === 'LOWEST') {
+      const sA = getAuthoritativeSOSPriority(a, incidents, sarResult).score ?? 999;
+      const sB = getAuthoritativeSOSPriority(b, incidents, sarResult).score ?? 999;
+      return sA - sB;
+    }
+    return 0; // Default ordering preserved
+  });
+
   const criticalSOSCount = sosReports.filter(s => s.severity === 'CRITICAL' || s.urgency === 'CRITICAL').length;
+  const highSOSCount = sosReports.filter(s => s.severity === 'HIGH' || s.urgency === 'HIGH').length;
+  const resolvedSOSCount = sosReports.filter(s => (s.status || '').toUpperCase() === 'RESOLVED').length;
   const pendingSOSCount = sosReports.filter(s => (s.status || 'NEW').toUpperCase() === 'NEW').length;
+
+  // Authoritative Highest Priority Score dynamically evaluated
+  const validScores = sosReports
+    .map(s => getAuthoritativeSOSPriority(s, incidents, sarResult).score)
+    .filter((s): s is number => s !== null);
+  const highestPriorityScore = validScores.length > 0 ? Math.max(...validScores) : null;
 
   return (
     <div className="h-[calc(100vh-84px)] overflow-y-auto bg-command-bg text-slate-100 p-4 lg:p-6 space-y-6">
@@ -205,12 +379,6 @@ export const IncidentsSOS: React.FC<IncidentsSOSProps> = ({
         </div>
       </div>
 
-      {successMsg && (
-        <div className="p-3 rounded-lg bg-emerald-950/80 border border-emerald-500 text-emerald-200 text-xs font-mono flex items-center space-x-2 shadow animate-fade-in">
-          <CheckCircle className="w-4 h-4 text-emerald-400 flex-shrink-0" />
-          <span>{successMsg}</span>
-        </div>
-      )}
 
       {/* SECTION 1: ACTIVE INCIDENTS DASHBOARD TABLE */}
       <div className="rounded-lg bg-command-surface border border-command-border font-mono text-xs overflow-hidden shadow-lg">
@@ -325,149 +493,298 @@ export const IncidentsSOS: React.FC<IncidentsSOSProps> = ({
         </div>
       </div>
 
-      {/* SECTION 2: GRID LAYOUT (CITIZEN REPORT FORM & LIVE SOS TRIAGE STREAM) */}
+      {/* SECTION 2: GRID LAYOUT (ALREADY SUBMITTED CITIZEN SOS REQUESTS & LIVE SOS TRIAGE STREAM) */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         
-        {/* Left Form: Professional Citizen SOS Intake */}
-        <div className="lg:col-span-5 p-4 rounded-lg bg-command-surface border border-command-border font-mono text-xs space-y-4 shadow-lg">
-          <div className="flex items-center justify-between border-b border-command-border pb-2.5">
-            <div className="flex items-center space-x-2 font-bold text-slate-100">
-              <Send className="w-4 h-4 text-blue-400" />
-              <span>CITIZEN DISTRESS INTAKE FORM</span>
+        {/* Left Panel: Already Submitted Citizen SOS Requests */}
+        <div className="lg:col-span-6 p-4 rounded-lg bg-command-surface border border-command-border font-mono text-xs space-y-4 shadow-lg">
+          <div className="flex flex-wrap items-center justify-between border-b border-command-border pb-2.5 gap-2">
+            <div>
+              <div className="flex items-center space-x-2 font-bold text-slate-100">
+                <Phone className="w-4 h-4 text-amber-400" />
+                <span className="text-sm uppercase tracking-wide">CITIZEN SOS REQUESTS</span>
+              </div>
+              <p className="text-[11px] text-slate-400 mt-0.5">
+                Incoming emergency requests from affected citizens
+              </p>
             </div>
-            <span className="px-2 py-0.5 rounded bg-amber-950/60 border border-amber-700 text-amber-300 text-[10px] font-bold">
-              SIMULATED DEMONSTRATION REPORT
-            </span>
+            <div className="flex flex-wrap items-center gap-2">
+              {/* Optional Sort by Priority Control */}
+              <div className="flex items-center space-x-1 bg-slate-900 px-2 py-0.5 rounded border border-slate-800 text-[10px]">
+                <span className="text-slate-400 font-semibold uppercase text-[9px] mr-0.5">Sort:</span>
+                {(['DEFAULT', 'HIGHEST', 'LOWEST'] as const).map((mode) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    onClick={() => setSortBy(mode)}
+                    className={`px-1.5 py-0.5 rounded font-bold transition cursor-pointer ${
+                      sortBy === mode
+                        ? 'bg-blue-600 text-white shadow-xs'
+                        : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                    title={
+                      mode === 'DEFAULT' ? 'Default order' :
+                      mode === 'HIGHEST' ? 'Priority — Highest First' : 'Priority — Lowest First'
+                    }
+                  >
+                    {mode === 'DEFAULT' ? 'Default' : mode === 'HIGHEST' ? 'Priority ↑' : 'Priority ↓'}
+                  </button>
+                ))}
+              </div>
+              <span className="px-2 py-0.5 rounded bg-amber-950/70 border border-amber-700 text-amber-300 text-[10px] font-bold tracking-wider">
+                SIMULATED DEMONSTRATION DATA
+              </span>
+            </div>
           </div>
 
-          <p className="text-[11px] text-slate-400 leading-relaxed">
-            Submit crowdsourced SOS alerts. Reports are ingested directly into the unified incident model, mapped on the GIS operational picture, and fused with satellite radar extents.
-          </p>
-
-          <form onSubmit={handleSubmit} className="space-y-3">
-            <div>
-              <label className="text-slate-300 block mb-1 font-semibold">Emergency Category:</label>
-              <select
-                value={category}
-                onChange={(e) => setCategory(e.target.value as any)}
-                className="w-full p-2 rounded bg-command-card border border-command-border text-slate-200 text-xs focus:border-blue-500 focus:outline-none"
-              >
-                <option value="trapped_person">Trapped Person(s) / Rooftop Stranded</option>
-                <option value="medical_emergency">Critical Medical Emergency / Oxygen / Dialysis</option>
-                <option value="flooding">Rapid Flood Water Surge / Levee Breach</option>
-                <option value="blocked_road">Road Submerged / Bridge Collapsed</option>
-                <option value="damaged_building">Structural Collapse / Severe Damage</option>
-                <option value="missing_person">Missing Person Report</option>
-              </select>
+          {/* Telemetry Summary Counters (with Highest Priority) */}
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5">
+            <div className="p-2.5 rounded bg-slate-900/80 border border-slate-800">
+              <span className="text-[10px] text-slate-400 block font-semibold uppercase">Total Requests</span>
+              <span className="text-lg font-bold text-slate-100">{sosReports.length}</span>
             </div>
+            <div className="p-2.5 rounded bg-red-950/40 border border-red-900/60">
+              <span className="text-[10px] text-red-300 block font-semibold uppercase">Critical</span>
+              <span className="text-lg font-bold text-red-400">{criticalSOSCount}</span>
+            </div>
+            <div className="p-2.5 rounded bg-amber-950/40 border border-amber-900/60">
+              <span className="text-[10px] text-amber-300 block font-semibold uppercase">High</span>
+              <span className="text-lg font-bold text-amber-400">{highSOSCount}</span>
+            </div>
+            <div className="p-2.5 rounded bg-emerald-950/40 border border-emerald-900/60">
+              <span className="text-[10px] text-emerald-300 block font-semibold uppercase">Resolved</span>
+              <span className="text-lg font-bold text-emerald-400">{resolvedSOSCount}</span>
+            </div>
+            <div className="p-2.5 rounded bg-red-950/50 border border-red-800/80 col-span-2 sm:col-span-1 flex flex-col justify-between">
+              <span className="text-[10px] text-red-300 block font-semibold uppercase tracking-wider">Highest Priority</span>
+              <div className="flex items-baseline space-x-1 mt-0.5">
+                {highestPriorityScore !== null ? (
+                  <>
+                    <span className="text-lg font-black font-mono text-red-400">{highestPriorityScore}</span>
+                    <span className="text-[10px] text-slate-400 font-mono">/ 100</span>
+                  </>
+                ) : (
+                  <span className="text-xs font-bold text-slate-400">UNAVAILABLE</span>
+                )}
+              </div>
+            </div>
+          </div>
 
-            <div className="grid grid-cols-2 gap-2">
-              <div>
-                <label className="text-slate-300 block mb-1 font-semibold">Severity / Urgency:</label>
-                <select
-                  value={severity}
-                  onChange={(e) => setSeverity(e.target.value as any)}
-                  className="w-full p-2 rounded bg-command-card border border-command-border text-slate-200 text-xs focus:border-blue-500 focus:outline-none"
+          {/* Submitted Request Queue Cards */}
+          <div className="space-y-3 max-h-[640px] overflow-y-auto pr-1">
+            {displayedSOS.map((sos) => {
+              const sosId = sos.id || sos.sos_id || 'SOS-000';
+              const priorityInfo = getAuthoritativeSOSPriority(sos, incidents, sarResult);
+              const currentStatus = (sos.status || 'NEW').toUpperCase();
+              const isUpdating = updatingSosId === sosId;
+              const isExpanded = !!expandedReasons[sosId];
+
+              const isCrit = priorityInfo.level === 'CRITICAL';
+              const isHigh = priorityInfo.level === 'HIGH';
+              const isMed = priorityInfo.level === 'MEDIUM';
+              const isLow = priorityInfo.level === 'LOW';
+
+              const badgeColor =
+                isCrit ? 'bg-red-950 text-red-200 border-red-700 ring-1 ring-red-500/40' :
+                isHigh ? 'bg-orange-950 text-orange-200 border-orange-700' :
+                isMed ? 'bg-yellow-950 text-yellow-200 border-yellow-700' :
+                isLow ? 'bg-emerald-950 text-emerald-200 border-emerald-700' :
+                'bg-slate-800 text-slate-300 border-slate-700';
+
+              const dotColor =
+                isCrit ? 'bg-red-500 animate-pulse' :
+                isHigh ? 'bg-orange-500' :
+                isMed ? 'bg-yellow-500' :
+                isLow ? 'bg-emerald-500' :
+                'bg-slate-500';
+
+              const scoreTextColor =
+                isCrit ? 'text-red-400' :
+                isHigh ? 'text-orange-400' :
+                isMed ? 'text-yellow-400' :
+                isLow ? 'text-emerald-400' :
+                'text-slate-400';
+
+              const barFillColor =
+                isCrit ? 'bg-red-500' :
+                isHigh ? 'bg-orange-500' :
+                isMed ? 'bg-yellow-500' :
+                isLow ? 'bg-emerald-500' :
+                'bg-slate-600';
+
+              return (
+                <div 
+                  key={sosId} 
+                  className="p-3.5 rounded-lg bg-command-card/90 border border-command-border space-y-2.5 shadow hover:border-slate-700 transition"
                 >
-                  <option value="CRITICAL">CRITICAL (Immediate Life Threat)</option>
-                  <option value="HIGH">HIGH (Rising Water Level)</option>
-                  <option value="MEDIUM">MEDIUM (Cut-off / Isolation)</option>
-                  <option value="LOW">LOW (Property Precaution)</option>
-                </select>
+                  {/* TOP SECTION: Prominent Priority Level & Score */}
+                  <div className="flex items-start justify-between gap-2 border-b border-command-border/60 pb-2.5">
+                    <div>
+                      <div className="flex items-center space-x-2">
+                        <span className={`px-2.5 py-1 rounded text-xs font-black tracking-wider uppercase inline-flex items-center space-x-1.5 shadow-sm border ${badgeColor}`}>
+                          <span className={`w-2 h-2 rounded-full ${dotColor}`} />
+                          <span>{priorityInfo.level}</span>
+                        </span>
+                        <span className="text-blue-400 font-bold font-mono text-xs">
+                          {sosId}
+                        </span>
+                      </div>
+                      <div className="font-bold text-slate-200 uppercase text-[11px] mt-1 tracking-wide">
+                        {sos.category.replace(/_/g, ' ')}
+                      </div>
+                    </div>
+
+                    <div className="text-right flex flex-col items-end shrink-0">
+                      <span className="text-[10px] text-slate-400 font-semibold tracking-wider uppercase">
+                        {priorityInfo.isDemoPriority ? 'DEMO PRIORITY SCORE' : 'PRIORITY SCORE'}
+                      </span>
+                      {priorityInfo.score !== null ? (
+                        <>
+                          <div className="flex items-baseline space-x-1 mt-0.5">
+                            <span className={`text-base font-black font-mono ${scoreTextColor}`}>
+                              {priorityInfo.score}
+                            </span>
+                            <span className="text-xs text-slate-400 font-mono">/ 100</span>
+                          </div>
+                          {/* Visual Progress Bar Indicator */}
+                          <div className="w-24 h-1.5 bg-slate-800 rounded-full overflow-hidden border border-slate-700/80 mt-1">
+                            <div 
+                              className={`h-full rounded-full transition-all duration-300 ${barFillColor}`}
+                              style={{ width: `${Math.min(100, Math.max(0, priorityInfo.score))}%` }}
+                            />
+                          </div>
+                        </>
+                      ) : (
+                        <span className="text-[10px] font-bold text-slate-400 mt-1 bg-slate-800/80 px-2 py-0.5 rounded border border-slate-700">
+                          UNAVAILABLE
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Citizen Situation Description */}
+                  <p className="text-slate-200 text-xs leading-relaxed italic">
+                    "{sos.description}"
+                  </p>
+
+                  {/* Geospatial Location & People Affected */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px] text-slate-300 pt-1 border-t border-command-border/40">
+                    <div>
+                      <span className="text-slate-400 block text-[10px]">Location:</span>
+                      <div className="flex items-center space-x-1 text-slate-200 font-medium">
+                        <MapPin className="w-3.5 h-3.5 text-blue-400 shrink-0" />
+                        <span className="truncate">{sos.address || `${sos.location.lat.toFixed(4)}, ${sos.location.lng.toFixed(4)}`}</span>
+                      </div>
+                    </div>
+
+                    <div>
+                      <span className="text-slate-400 block text-[10px]">People affected:</span>
+                      <div className="flex items-center space-x-1 text-amber-300 font-bold">
+                        <Users className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                        <span>{sos.people_affected || sos.people_count || 1}</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Explainable Factors ("WHY THIS PRIORITY?") */}
+                  {priorityInfo.reasons.length > 0 && (
+                    <div className="pt-1 border-t border-command-border/30">
+                      <button
+                        type="button"
+                        onClick={() => toggleReasons(sosId)}
+                        className="text-[10px] text-sky-400 hover:text-sky-300 flex items-center space-x-1 font-semibold cursor-pointer transition"
+                      >
+                        <ChevronRight className={`w-3 h-3 transition-transform duration-200 ${isExpanded ? 'rotate-90' : ''}`} />
+                        <span>WHY THIS PRIORITY?</span>
+                      </button>
+                      {isExpanded && (
+                        <div className="mt-1.5 p-2 rounded bg-slate-900/90 border border-slate-800 space-y-1 text-[10px] text-slate-300">
+                          <ul className="space-y-1 pl-1">
+                            {priorityInfo.reasons.map((r, idx) => (
+                              <li key={idx} className="flex items-start space-x-1.5">
+                                <span className="text-sky-400 shrink-0">•</span>
+                                <span className="leading-snug">{r}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Status & Interactive Dispatcher Action Buttons */}
+                  <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-command-border/50">
+                    <div className="flex items-center space-x-1">
+                      <span className="text-[10px] text-slate-400">Status:</span>
+                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                        currentStatus === 'RESOLVED'
+                          ? 'bg-emerald-950 text-emerald-300 border border-emerald-800'
+                          : currentStatus === 'ASSIGNED'
+                          ? 'bg-blue-950 text-blue-300 border border-blue-800'
+                          : currentStatus === 'ACKNOWLEDGED'
+                          ? 'bg-purple-950 text-purple-300 border border-purple-800'
+                          : 'bg-amber-950 text-amber-300 border border-amber-800'
+                      }`}>
+                        {currentStatus}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center space-x-1.5 ml-auto">
+                      {currentStatus === 'NEW' && (
+                        <button
+                          type="button"
+                          disabled={isUpdating}
+                          onClick={() => handleUpdateStatus(sosId, 'ACKNOWLEDGED')}
+                          className="px-2.5 py-1 rounded bg-purple-900/40 hover:bg-purple-800/60 text-purple-200 border border-purple-700 text-[10px] font-bold transition disabled:opacity-50 cursor-pointer"
+                        >
+                          ACKNOWLEDGE
+                        </button>
+                      )}
+
+                      {(currentStatus === 'NEW' || currentStatus === 'ACKNOWLEDGED') && (
+                        <button
+                          type="button"
+                          disabled={isUpdating}
+                          onClick={() => handleUpdateStatus(sosId, 'ASSIGNED')}
+                          className="px-2.5 py-1 rounded bg-blue-900/40 hover:bg-blue-800/60 text-blue-200 border border-blue-700 text-[10px] font-bold transition disabled:opacity-50 cursor-pointer"
+                        >
+                          ASSIGN RESOURCE
+                        </button>
+                      )}
+
+                      {currentStatus !== 'RESOLVED' && (
+                        <button
+                          type="button"
+                          disabled={isUpdating}
+                          onClick={() => handleUpdateStatus(sosId, 'RESOLVED')}
+                          className="px-2.5 py-1 rounded bg-emerald-900/40 hover:bg-emerald-800/60 text-emerald-200 border border-emerald-700 text-[10px] font-bold transition disabled:opacity-50 cursor-pointer"
+                        >
+                          RESOLVE
+                        </button>
+                      )}
+
+                      {currentStatus === 'RESOLVED' && (
+                        <span className="text-[10px] text-emerald-400 font-bold flex items-center space-x-1">
+                          <CheckCircle className="w-3.5 h-3.5" />
+                          <span>RESOLVED / CLOSED</span>
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+
+            {displayedSOS.length === 0 && (
+              <div className="p-8 text-center text-slate-500">
+                No citizen emergency requests on record.
               </div>
-
-              <div>
-                <label className="text-slate-300 block mb-1 font-semibold">People Affected:</label>
-                <input
-                  type="number"
-                  min="1"
-                  max="100"
-                  value={peopleAffected}
-                  onChange={(e) => setPeopleAffected(e.target.value)}
-                  className="w-full p-2 rounded bg-command-card border border-command-border text-slate-200 text-xs focus:border-blue-500 focus:outline-none"
-                />
-              </div>
-            </div>
-
-            <div>
-              <label className="text-slate-300 block mb-1 font-semibold">Street Address / Landmark:</label>
-              <input
-                type="text"
-                placeholder="e.g. EcoSpace Tower 2, ORR Bellandur or Yamalur Weir"
-                value={address}
-                onChange={(e) => setAddress(e.target.value)}
-                className="w-full p-2 rounded bg-command-card border border-command-border text-slate-200 text-xs focus:border-blue-500 focus:outline-none"
-              />
-            </div>
-
-            <div className="grid grid-cols-2 gap-2">
-              <div>
-                <label className="text-slate-300 block mb-1 font-semibold">Latitude:</label>
-                <input
-                  type="text"
-                  value={lat}
-                  onChange={(e) => setLat(e.target.value)}
-                  className="w-full p-2 rounded bg-command-card border border-command-border text-slate-200 text-xs font-mono"
-                />
-              </div>
-              <div>
-                <label className="text-slate-300 block mb-1 font-semibold">Longitude:</label>
-                <input
-                  type="text"
-                  value={lng}
-                  onChange={(e) => setLng(e.target.value)}
-                  className="w-full p-2 rounded bg-command-card border border-command-border text-slate-200 text-xs font-mono"
-                />
-              </div>
-            </div>
-
-            <div>
-              <label className="text-slate-300 block mb-1 font-semibold">Situation Description:</label>
-              <textarea
-                rows={3}
-                placeholder="Describe water depth, structural threats, trapped infants or elderly citizens, medical dependencies..."
-                value={description}
-                onChange={(e) => setDescription(e.target.value)}
-                className="w-full p-2 rounded bg-command-card border border-command-border text-slate-200 text-xs focus:border-blue-500 focus:outline-none resize-none"
-              />
-            </div>
-
-            <div className="p-2.5 rounded bg-red-950/30 border border-red-900/50 flex items-center space-x-2">
-              <input
-                type="checkbox"
-                id="medical"
-                checked={medicalUrgency}
-                onChange={(e) => setMedicalUrgency(e.target.checked)}
-                className="accent-red-500 w-4 h-4 cursor-pointer"
-              />
-              <label htmlFor="medical" className="text-slate-200 cursor-pointer text-[11px] font-bold text-red-300 select-none">
-                Requires Immediate Medical Evacuation (Trauma, Oxygen, Insulin, Dialysis)
-              </label>
-            </div>
-
-            <div>
-              <label className="text-slate-300 block mb-1 font-semibold">Citizen Contact Phone:</label>
-              <input
-                type="text"
-                value={contactNumber}
-                onChange={(e) => setContactNumber(e.target.value)}
-                className="w-full p-2 rounded bg-command-card border border-command-border text-slate-200 text-xs font-mono"
-              />
-            </div>
-
-            <button
-              type="submit"
-              disabled={isSubmitting}
-              className="w-full py-2.5 rounded font-bold text-xs bg-red-600 hover:bg-red-500 text-white shadow-md flex items-center justify-center space-x-2 transition disabled:opacity-50 cursor-pointer"
-            >
-              <Send className="w-4 h-4" />
-              <span>{isSubmitting ? 'DISPATCHING SOS CALL...' : 'SEND CITIZEN EMERGENCY SOS'}</span>
-            </button>
-          </form>
+            )}
+          </div>
         </div>
 
         {/* Right Panel: Live SOS Triage Stream */}
-        <div className="lg:col-span-7 space-y-3 font-mono text-xs">
+        <div className="lg:col-span-6 space-y-3 font-mono text-xs">
           
           {/* Header & Filter Controls */}
           <div className="p-3 rounded-t-lg bg-command-surface border border-command-border flex flex-wrap items-center justify-between gap-2">
@@ -501,39 +818,89 @@ export const IncidentsSOS: React.FC<IncidentsSOSProps> = ({
           {/* Stream Cards */}
           <div className="bg-command-surface border-x border-b border-command-border rounded-b-lg divide-y divide-command-border max-h-[640px] overflow-y-auto">
             {filteredSOS.map((sos) => {
-              const isCrit = sos.severity === 'CRITICAL' || sos.urgency === 'CRITICAL';
+              const sosId = sos.id || sos.sos_id || 'SOS-000';
+              const priorityInfo = getAuthoritativeSOSPriority(sos, incidents, sarResult);
               const currentStatus = (sos.status || 'PENDING').toUpperCase();
-              const isUpdating = updatingSosId === (sos.id || sos.sos_id);
+              const isUpdating = updatingSosId === sosId;
               const floodRel = getSOSFloodRelation(sos.location, sarResult);
 
+              const isCrit = priorityInfo.level === 'CRITICAL';
+              const isHigh = priorityInfo.level === 'HIGH';
+              const isMed = priorityInfo.level === 'MEDIUM';
+              const isLow = priorityInfo.level === 'LOW';
+
+              const badgeColor =
+                isCrit ? 'bg-red-950 text-red-200 border-red-700' :
+                isHigh ? 'bg-orange-950 text-orange-200 border-orange-700' :
+                isMed ? 'bg-yellow-950 text-yellow-200 border-yellow-700' :
+                isLow ? 'bg-emerald-950 text-emerald-200 border-emerald-700' :
+                'bg-slate-800 text-slate-300 border-slate-700';
+
+              const dotColor =
+                isCrit ? 'bg-red-500 animate-pulse' :
+                isHigh ? 'bg-orange-500' :
+                isMed ? 'bg-yellow-500' :
+                isLow ? 'bg-emerald-500' :
+                'bg-slate-500';
+
+              const scoreTextColor =
+                isCrit ? 'text-red-400' :
+                isHigh ? 'text-orange-400' :
+                isMed ? 'text-yellow-400' :
+                isLow ? 'text-emerald-400' :
+                'text-slate-400';
+
+              const barFillColor =
+                isCrit ? 'bg-red-500' :
+                isHigh ? 'bg-orange-500' :
+                isMed ? 'bg-yellow-500' :
+                isLow ? 'bg-emerald-500' :
+                'bg-slate-600';
+
               return (
-                <div key={sos.id || sos.sos_id} className="p-3.5 space-y-2.5 hover:bg-slate-900/60 transition">
-                  <div className="flex items-center justify-between">
+                <div key={sosId} className="p-3.5 space-y-2.5 hover:bg-slate-900/60 transition">
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-command-border/40 pb-2">
                     <div className="flex flex-wrap items-center gap-2">
-                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                        isCrit
-                          ? 'bg-red-950 text-red-300 border border-red-800'
-                          : 'bg-amber-950 text-amber-300 border border-amber-800'
-                      }`}>
-                        {sos.severity || sos.urgency}
+                      <span className={`px-2 py-0.5 rounded text-[10px] font-black tracking-wider uppercase inline-flex items-center space-x-1 border ${badgeColor}`}>
+                        <span className={`w-1.5 h-1.5 rounded-full ${dotColor}`} />
+                        <span>{priorityInfo.level}</span>
                       </span>
-                      <span className="font-bold text-slate-200 uppercase">
+                      <span className="font-bold text-slate-200 uppercase text-[11px]">
                         {sos.category.replace(/_/g, ' ')}
                       </span>
-                      <span className="text-[10px] text-slate-500 font-mono">
-                        {sos.id || sos.sos_id}
+                      <span className="text-[10px] text-blue-400 font-mono font-bold">
+                        {sosId}
                       </span>
                       <span className={`text-[9px] px-1.5 py-0.2 rounded font-bold border ${floodRel.color}`}>
                         {floodRel.status}
                       </span>
-                      <span className="text-[9px] px-1.5 py-0.2 rounded bg-slate-800 text-slate-400 border border-slate-700">
-                        SIMULATED DEMONSTRATION REPORT
-                      </span>
                     </div>
 
-                    <span className="text-[10px] text-slate-400">
-                      {new Date(sos.timestamp).toLocaleTimeString()}
-                    </span>
+                    <div className="flex items-center space-x-2">
+                      {priorityInfo.score !== null ? (
+                        <div className="flex items-center space-x-1.5 bg-slate-900 px-2 py-0.5 rounded border border-slate-800">
+                          <span className="text-[9px] text-slate-400 font-semibold uppercase">
+                            {priorityInfo.isDemoPriority ? 'DEMO PRIORITY:' : 'PRIORITY:'}
+                          </span>
+                          <span className={`font-mono font-bold text-xs ${scoreTextColor}`}>
+                            {priorityInfo.score}/100
+                          </span>
+                          <div className="w-12 h-1 bg-slate-800 rounded-full overflow-hidden border border-slate-700/60">
+                            <div 
+                              className={`h-full ${barFillColor}`}
+                              style={{ width: `${Math.min(100, Math.max(0, priorityInfo.score))}%` }}
+                            />
+                          </div>
+                        </div>
+                      ) : (
+                        <span className="text-[9px] font-bold text-slate-400 bg-slate-900 px-1.5 py-0.5 rounded border border-slate-800">
+                          PRIORITY: UNAVAILABLE
+                        </span>
+                      )}
+                      <span className="text-[10px] text-slate-400">
+                        {new Date(sos.timestamp).toLocaleTimeString()}
+                      </span>
+                    </div>
                   </div>
 
                   <p className="text-slate-200 text-xs leading-relaxed">

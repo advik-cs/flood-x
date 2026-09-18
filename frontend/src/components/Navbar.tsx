@@ -48,8 +48,7 @@ export const Navbar: React.FC<NavbarProps> = ({
     { id: 'incidents', label: 'INCIDENTS & SOS', icon: MapPin },
     { id: 'damage', label: 'DAMAGE ASSESSMENT', icon: FileText },
     { id: 'resources', label: 'RESOURCE OPTIMIZATION', icon: Sliders },
-    { id: 'before', label: 'BEFORE DISASTER', icon: Info },
-    { id: 'after', label: 'AFTER DISASTER', icon: ShieldAlert },
+    { id: 'after', label: 'DISASTER MANAGEMENT', icon: ShieldAlert },
     { id: 'system', label: 'SYSTEM & DATA STATUS', icon: Bot },
   ];
 

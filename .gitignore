@@ -1,11 +1,6 @@
-# Dependencies
 node_modules/
-
-# Production build artifacts
-backend/dist/
-frontend/dist/
-
-# Environment files
 .env
-.env.local
-*.local
+.env.*
+!.env.example
+*.zip
+backend/uploads/aerial-178971*

@@ -39,8 +39,8 @@ export class Store {
             // Initial fusion
             this.runFusion(pid);
         }
-        // Initialize deterministic demo aerial reconnaissance detections
-        this.droneDetections = visionService.getDemoDetections('IMG-DEMO-AERIAL');
+        // Initialize drone detections (empty on initial startup as per requirements)
+        this.droneDetections = [];
         this.auditLogs = [
             {
                 incident_id: 'FLD-BLR-DEMO',
@@ -266,6 +266,15 @@ export class Store {
             return this.droneDetections[index];
         }
         return null;
+    }
+    loadDemoDroneDetections() {
+        this.droneDetections = visionService.getDemoDetections('IMG-DEMO-AERIAL');
+        this.runFusion(this.currentPresetId);
+        return this.droneDetections;
+    }
+    clearDroneDetections() {
+        this.droneDetections = [];
+        this.runFusion(this.currentPresetId);
     }
     getSARResult(presetId = this.currentPresetId) {
         return this.sarResults.get(presetId);

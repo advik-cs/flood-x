@@ -125,7 +125,7 @@ export const AfterDisaster: React.FC<AfterDisasterProps> = ({
           <div className="flex items-center space-x-2">
             <ShieldAlert className="w-5 h-5 text-indigo-400" />
             <h1 className="text-base font-bold text-slate-100">
-              AFTER DISASTER — DAMAGE ASSESSMENT & RECOVERY STAGING
+              DISASTER MANAGEMENT — DAMAGE ASSESSMENT & RECOVERY STAGING
             </h1>
           </div>
           <p className="text-xs text-slate-400 mt-0.5">
