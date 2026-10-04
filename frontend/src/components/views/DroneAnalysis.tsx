@@ -108,6 +108,8 @@ export const DroneAnalysis: React.FC<DroneAnalysisProps> = ({
   );
   const [selectedDetectionId, setSelectedDetectionId] = useState<string | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false);
+  const analysisIdRef = useRef<number>(0);
+  const [analysisError, setAnalysisError] = useState(false);
   const [flaggedMap, setFlaggedMap] = useState<Record<string, boolean>>({});
 
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -170,38 +172,56 @@ export const DroneAnalysis: React.FC<DroneAnalysisProps> = ({
     setImageTitle(`Uploaded Reconnaissance Frame: ${file.name}`);
     setIsCustomImage(true);
     setSelectedDetectionId(null);
+    setActiveDetections([]);
+    setAnalysisError(false);
     setIsAnalyzing(true);
+
+    const currentAnalysisId = Date.now();
+    analysisIdRef.current = currentAnalysisId;
 
     const formData = new FormData();
     formData.append('image', file);
 
     try {
       const res = await analyzeDroneImage(formData);
-      if (res && res.detections && res.detections.length > 0) {
-        setActiveDetections(res.detections);
+      if (analysisIdRef.current === currentAnalysisId) {
+        if (res && Array.isArray(res.detections)) {
+          setActiveDetections(res.detections);
+        } else {
+          setActiveDetections([]);
+        }
       }
     } catch (err) {
       console.error('Custom image analysis failed:', err);
+      if (analysisIdRef.current === currentAnalysisId) {
+        setAnalysisError(true);
+      }
     } finally {
-      setIsAnalyzing(false);
+      if (analysisIdRef.current === currentAnalysisId) {
+        setIsAnalyzing(false);
+      }
     }
   };
 
   // Run or re-run AI inference
   const handleRunAiAnalysis = async () => {
+    if (isCustomImage) {
+      // Analysis already happened on upload for custom images.
+      return;
+    }
+    
     setIsAnalyzing(true);
     try {
-      if (isCustomImage) {
-        const res = await analyzeDroneImage();
-        if (res && res.detections) {
-          setActiveDetections(res.detections);
-        }
-      } else {
-        setActiveDetections(DEMO_DETECTIONS);
-        onRefreshDetections();
-      }
+      setActiveDetections([]);
+      setAnalysisError(false);
+      
+      // Simulate demo processing delay for demo image
+      await new Promise(r => setTimeout(r, 1000));
+      setActiveDetections(DEMO_DETECTIONS);
+      onRefreshDetections();
     } catch (err) {
       console.error('Analysis execution error:', err);
+      setAnalysisError(true);
     } finally {
       setIsAnalyzing(false);
     }
@@ -390,8 +410,27 @@ export const DroneAnalysis: React.FC<DroneAnalysisProps> = ({
             <img
               src={currentImageUrl}
               alt="Aerial flood reconnaissance view"
-              className="w-full h-full object-contain bg-slate-950 select-none"
+              className={`w-full h-full object-contain bg-slate-950 select-none ${isAnalyzing || analysisError ? 'opacity-50 blur-sm' : ''}`}
             />
+            
+            {isAnalyzing && (
+              <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/40 z-50">
+                <Sparkles className="w-12 h-12 text-blue-500 animate-spin mb-4" />
+                <div className="text-blue-400 font-bold tracking-widest bg-slate-900/80 px-6 py-2 rounded-full shadow-lg border border-blue-500/30">
+                  ANALYZING AERIAL FRAME...
+                </div>
+              </div>
+            )}
+
+            {analysisError && !isAnalyzing && (
+              <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/60 z-50">
+                <AlertTriangle className="w-12 h-12 text-red-500 mb-4" />
+                <div className="text-red-400 font-bold tracking-widest bg-slate-900/90 px-6 py-3 rounded border border-red-500/30 text-center">
+                  <div className="text-sm">ANALYSIS FAILED</div>
+                  <div className="text-xs text-slate-300 mt-1">Please try uploading the image again or check backend logs.</div>
+                </div>
+              </div>
+            )}
 
             {/* Bounding Box Overlays */}
             {activeDetections.map((det) => {

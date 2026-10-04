@@ -322,14 +322,19 @@ apiRouter.post('/satellite/probe', (req, res) => {
 apiRouter.get('/drone/detections', (_req, res) => {
     res.json(store.getDroneDetections());
 });
-apiRouter.post('/drone/analyze', upload.single('image'), (req, res) => {
+apiRouter.post('/drone/analyze', upload.single('image'), async (req, res) => {
     const file = req.file;
     const imageId = `IMG-${Date.now().toString().slice(-6)}`;
     const filename = file ? file.filename : 'demo_aerial_recon.jpg';
-    // Analyze via visionService (custom uploaded image vs demo baseline)
-    const analysis = visionService.analyzeImage(filename, imageId, !file);
-    store.setDroneDetections(analysis.detections);
-    res.json(analysis);
+    try {
+        const analysis = await visionService.analyzeImage(filename, imageId, !file);
+        store.setDroneDetections(analysis.detections);
+        res.json(analysis);
+    }
+    catch (err) {
+        console.error('Vision analysis route error:', err.message);
+        res.status(500).json({ error: err.message, detections: [] });
+    }
 });
 apiRouter.post('/drone/detections/:id/approve', (req, res) => {
     const { approved, flagged_for_rescue, notes } = req.body;
